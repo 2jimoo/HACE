@@ -1,6 +1,10 @@
 from common import get_api_key, conv_template, extract_json
-from language_models import APILiteLLM
-from config import FASTCHAT_TEMPLATE_NAMES, Model
+from language_models import APILiteLLM, OllamaLM
+from config import FASTCHAT_TEMPLATE_NAMES, Model, is_ollama_model
+
+# FastChat template used to build OpenAI-style message lists for Ollama models
+# (Ollama applies each model's own chat template on the server side)
+OLLAMA_FASTCHAT_TEMPLATE = "gpt-4"
 
 
 def load_attack_and_target_models(args):
@@ -16,12 +20,15 @@ def load_attack_and_target_models(args):
                         category = args.category,
                         max_n_tokens = args.target_max_n_tokens,
                         evaluate_locally = args.evaluate_locally,
-                        phase = args.jailbreakbench_phase
+                        phase = args.jailbreakbench_phase,
+                        use_jailbreakbench = args.use_jailbreakbench
                         )
     
     return attackLM, targetLM
 
 def load_indiv_model(model_name, local = False, use_jailbreakbench=True):
+    if is_ollama_model(model_name):
+        return OllamaLM(model_name)
     if use_jailbreakbench: 
         if local:
             from jailbreakbench import LLMvLLM
@@ -50,7 +57,7 @@ class AttackLM():
                 category: str,
                 evaluate_locally: bool):
         
-        self.model_name = Model(model_name)
+        self.model_name = model_name if is_ollama_model(model_name) else Model(model_name)
         self.max_n_tokens = max_n_tokens
         self.max_n_attack_attempts = max_n_attack_attempts
 
@@ -65,7 +72,7 @@ class AttackLM():
                                       use_jailbreakbench=False # Cannot use JBB as attacker
                                       )
         self.initialize_output = self.model.use_open_source_model
-        self.template = FASTCHAT_TEMPLATE_NAMES[self.model_name]
+        self.template = OLLAMA_FASTCHAT_TEMPLATE if is_ollama_model(model_name) else FASTCHAT_TEMPLATE_NAMES[self.model_name]
 
     def preprocess_conversation(self, convs_list: list, prompts_list: list[str]):
         # For open source models, we can seed the generation with proper JSON
@@ -106,7 +113,10 @@ class AttackLM():
             new_indices_to_regenerate = []
             for i, full_output in enumerate(outputs_list):
                 orig_index = indices_to_regenerate[i]
-                full_output = init_message + full_output + "}" # Add end brace since we terminate generation on end braces
+                # Some models ignore the seeded prefix and restart the JSON object themselves
+                if not full_output.lstrip().startswith("{"):
+                    full_output = init_message + full_output
+                full_output = full_output + "}" # Add end brace since we terminate generation on end braces
                 attack_dict, json_str = extract_json(full_output)
                 if attack_dict is not None:
                     valid_outputs[orig_index] = attack_dict
@@ -168,7 +178,11 @@ class TargetLM():
         self.model_name = model_name
         self.max_n_tokens = max_n_tokens
         self.phase = phase
+        # JailbreakBench only supports its own fixed set of models
+        if is_ollama_model(model_name):
+            use_jailbreakbench = False
         self.use_jailbreakbench = use_jailbreakbench
+        self.template = OLLAMA_FASTCHAT_TEMPLATE if is_ollama_model(model_name) else FASTCHAT_TEMPLATE_NAMES[Model(model_name)]
         self.evaluate_locally = evaluate_locally
 
         from config import TARGET_TEMP,  TARGET_TOP_P   
@@ -191,7 +205,11 @@ class TargetLM():
             full_prompts = []
             for conv, prompt in zip(convs_list, prompts_list):
                 conv.append_message(conv.roles[0], prompt)
-                full_prompts.append(conv.to_openai_api_messages())
+                messages = conv.to_openai_api_messages()
+                # Let Ollama use the model's own default system prompt instead of FastChat's
+                if is_ollama_model(self.model_name):
+                    messages = messages[1:]
+                full_prompts.append(messages)
 
             responses = self.model.batched_generate(full_prompts, 
                                                             max_n_tokens = self.max_n_tokens,  

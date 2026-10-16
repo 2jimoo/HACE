@@ -30,6 +30,7 @@ class WandBLogger:
     def __init__(self, args, system_prompts):
         self.logger = wandb.init(
             project = "jailbreak-llms",
+            mode = "disabled" if getattr(args, "no_wandb", False) else None,
             config = {
                 "attack_model" : args.attack_model,
                 "target_model" : args.target_model,

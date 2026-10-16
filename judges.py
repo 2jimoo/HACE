@@ -3,14 +3,15 @@ from fastchat.model import (
 )
 import re
 from system_prompts import get_judge_system_prompt
-from language_models import APILiteLLM
+from language_models import APILiteLLM, OllamaLM
 from loggers import logger
-
-from jailbreakbench import Classifier
+from config import is_ollama_model
 import os
 
 def load_judge(args):
-    if "gpt" in args.judge_model:
+    if is_ollama_model(args.judge_model):
+        return OllamaJudge(args)
+    elif "gpt" in args.judge_model:
         return GPTJudge(args)
     elif args.judge_model == "no-judge":
         return NoJudge(args)
@@ -73,8 +74,18 @@ class GPTJudge(JudgeBase):
         outputs = [self.process_output(raw_output) for raw_output in raw_outputs]
         return outputs
     
+class OllamaJudge(GPTJudge):
+    def __init__(self, args):
+        JudgeBase.__init__(self, args)
+        self.judge_model = OllamaLM(model_name = self.judge_name)
+
+    def create_conv(self, full_prompt):
+        return [{"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": full_prompt}]
+
 class JBBJudge(JudgeBase):
     def __init__(self,classifier_path):
+        from jailbreakbench import Classifier
         self.judge_model = Classifier(classifier_path)
         self.judge_name = "JBBJudge"
 

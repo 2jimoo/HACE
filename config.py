@@ -1,4 +1,5 @@
 from enum import Enum
+import os
 VICUNA_PATH = "/home/pchao/vicuna-13b-v1.5"
 LLAMA_PATH = "/home/pchao/Llama-2-7b-chat-hf"
 
@@ -97,3 +98,15 @@ LITELLM_TEMPLATES: dict[Model, dict] = {
                 "eos_tokens": ["</s>", "[/INST]"]
     }
 }
+
+## OLLAMA ##
+# Any model served by Ollama can be used by passing "ollama/<model>" (e.g. "ollama/llama3.1:8b")
+# as --attack-model, --target-model or --judge-model. No API key is needed.
+OLLAMA_PREFIX = "ollama/"
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+if not OLLAMA_BASE_URL.startswith("http"):
+    OLLAMA_BASE_URL = "http://" + OLLAMA_BASE_URL
+OLLAMA_BASE_URL = OLLAMA_BASE_URL.rstrip("/")
+
+def is_ollama_model(model_name: str) -> bool:
+    return isinstance(model_name, str) and model_name.startswith(OLLAMA_PREFIX)

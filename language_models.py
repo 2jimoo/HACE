@@ -1,6 +1,9 @@
 import os 
-import litellm
-from config import TOGETHER_MODEL_NAMES, LITELLM_TEMPLATES, API_KEY_NAMES, Model
+import re
+import time
+import requests
+from concurrent.futures import ThreadPoolExecutor
+from config import TOGETHER_MODEL_NAMES, LITELLM_TEMPLATES, API_KEY_NAMES, Model, OLLAMA_PREFIX, OLLAMA_BASE_URL
 from loggers import logger
 from common import get_api_key
 
@@ -25,6 +28,7 @@ class APILiteLLM(LanguageModel):
         super().__init__(model_name)
         self.api_key = get_api_key(self.model_name)
         self.litellm_model_name = self.get_litellm_model_name(self.model_name)
+        import litellm
         litellm.drop_params=True
         self.set_eos_tokens(self.model_name)
         
@@ -48,6 +52,7 @@ class APILiteLLM(LanguageModel):
 
     def _update_prompt_template(self):
         # We manually add the post_message later if we want to seed the model response
+        import litellm
         if self.model_name in LITELLM_TEMPLATES:
             litellm.register_prompt_template(
                 initial_prompt_value=LITELLM_TEMPLATES[self.model_name]["initial_prompt_value"],
@@ -73,6 +78,7 @@ class APILiteLLM(LanguageModel):
         if self.use_open_source_model:
             self._update_prompt_template()
         
+        import litellm
         outputs = litellm.batch_completion(
             model=self.litellm_model_name, 
             messages=convs_list,
@@ -88,6 +94,72 @@ class APILiteLLM(LanguageModel):
         responses = [output["choices"][0]["message"].content for output in outputs]
 
         return responses
+
+class OllamaLM(LanguageModel):
+    """
+        Language model served locally by Ollama (https://ollama.com). No API key required.
+        Model names are given as "ollama/<model>", e.g. "ollama/llama3.1:8b".
+    """
+    API_RETRY_SLEEP = 5
+    API_MAX_RETRY = 5
+    API_TIMEOUT = 600
+    MAX_WORKERS = int(os.environ.get("OLLAMA_NUM_PARALLEL", 4))
+
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self.ollama_model_name = model_name[len(OLLAMA_PREFIX):]
+        self.base_url = OLLAMA_BASE_URL
+        # Ollama continues a trailing assistant message, so the attacker output can be seeded with JSON
+        self.use_open_source_model = True
+        # Ollama applies the model's chat template itself
+        self.post_message = ""
+        self.eos_tokens = []
+        self._check_model_available()
+
+    def _check_model_available(self):
+        try:
+            r = requests.get(f"{self.base_url}/api/tags", timeout=10)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            raise ConnectionError(f"Cannot reach Ollama at {self.base_url}. Start it with `ollama serve` (or set OLLAMA_HOST). Error: {e}")
+        names = {m["name"] for m in r.json().get("models", [])}
+        if self.ollama_model_name not in names and f"{self.ollama_model_name}:latest" not in names:
+            raise ValueError(f"Ollama model '{self.ollama_model_name}' not found. Run: ollama pull {self.ollama_model_name}")
+
+    def _generate(self, messages: list[dict], max_n_tokens: int, temperature: float, top_p: float, stop: list[str]) -> str:
+        payload = {
+            "model": self.ollama_model_name,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "top_p": top_p,
+                "num_predict": max_n_tokens,
+                "seed": 0,
+            },
+        }
+        if stop:
+            payload["options"]["stop"] = stop
+        for attempt in range(self.API_MAX_RETRY):
+            try:
+                r = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=self.API_TIMEOUT)
+                r.raise_for_status()
+                content = r.json()["message"]["content"]
+                # Remove reasoning traces from thinking models (e.g. deepseek-r1, qwen3)
+                return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            except (requests.RequestException, KeyError, ValueError) as e:
+                logger.warning(f"Ollama request failed ({attempt+1}/{self.API_MAX_RETRY}): {e}")
+                time.sleep(self.API_RETRY_SLEEP)
+        raise RuntimeError(f"Ollama request to {self.ollama_model_name} failed after {self.API_MAX_RETRY} attempts.")
+
+    def batched_generate(self, convs_list: list[list[dict]], 
+                         max_n_tokens: int, 
+                         temperature: float, 
+                         top_p: float,
+                         extra_eos_tokens: list[str] = None) -> list[str]:
+        stop = self.eos_tokens + (extra_eos_tokens or [])
+        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+            return list(executor.map(lambda conv: self._generate(conv, max_n_tokens, temperature, top_p, stop), convs_list))
 
 # class LocalvLLM(LanguageModel):
     

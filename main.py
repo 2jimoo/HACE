@@ -6,6 +6,16 @@ from common import process_target_response, initialize_conversations
 import psutil
 import os
 import time
+from config import is_ollama_model
+
+def model_choice(choices):
+    """argparse type: accept one of the predefined models, or any Ollama model as "ollama/<model>"."""
+    def check(value):
+        if value in choices or is_ollama_model(value):
+            return value
+        raise argparse.ArgumentTypeError(f"invalid choice: '{value}' (choose from {', '.join(choices)}, or ollama/<model>)")
+    return check
+
 def memory_usage_psutil():
     # Returns the memory usage in MB
     process = psutil.Process(os.getpid())
@@ -81,9 +91,9 @@ if __name__ == '__main__':
     parser.add_argument(
         "--attack-model",
         default = "vicuna-13b-v1.5",
-        help = "Name of attacking model.",
-        choices=["vicuna-13b-v1.5", "llama-2-7b-chat-hf", "gpt-3.5-turbo-1106", "gpt-4-0125-preview", "claude-instant-1.2", "claude-2.1", "gemini-pro", 
-        "mixtral","vicuna-7b-v1.5"]
+        help = "Name of attacking model. Use ollama/<model> (e.g. ollama/llama3.1:8b) to run a local Ollama model.",
+        type=model_choice(["vicuna-13b-v1.5", "llama-2-7b-chat-hf", "gpt-3.5-turbo-1106", "gpt-4-0125-preview", "claude-instant-1.2", "claude-2.1", "gemini-pro", 
+        "mixtral","vicuna-7b-v1.5"])
     )
     parser.add_argument(
         "--attack-max-n-tokens",
@@ -103,8 +113,8 @@ if __name__ == '__main__':
     parser.add_argument(
         "--target-model",
         default = "vicuna-13b-v1.5", #TODO changed
-        help = "Name of target model.",
-        choices=["vicuna-13b-v1.5", "llama-2-7b-chat-hf", "gpt-3.5-turbo-1106", "gpt-4-0125-preview", "claude-instant-1.2", "claude-2.1", "gemini-pro",]
+        help = "Name of target model. Use ollama/<model> (e.g. ollama/llama3.1:8b) to run a local Ollama model.",
+        type=model_choice(["vicuna-13b-v1.5", "llama-2-7b-chat-hf", "gpt-3.5-turbo-1106", "gpt-4-0125-preview", "claude-instant-1.2", "claude-2.1", "gemini-pro",])
     )
     parser.add_argument(
         "--target-max-n-tokens",
@@ -130,8 +140,8 @@ if __name__ == '__main__':
     parser.add_argument(
         "--judge-model",
         default="gcg", #TODO changed
-        help="Name of judge model. Defaults to the Llama Guard model from JailbreakBench.",
-        choices=["gpt-3.5-turbo-1106", "gpt-4-0125-preview","no-judge","jailbreakbench","gcg"]
+        help="Name of judge model. Defaults to the GCG keyword-matching judge. Use ollama/<model> (e.g. ollama/llama3.1:8b) to run a local Ollama model.",
+        type=model_choice(["gpt-3.5-turbo-1106", "gpt-4-0125-preview","no-judge","jailbreakbench","gcg"])
     )
     parser.add_argument(
         "--judge-max-n-tokens",
@@ -207,6 +217,10 @@ if __name__ == '__main__':
         action="count", 
         default = 0,
         help="Level of verbosity of outputs, use -v for some outputs and -vv for all outputs.")
+    parser.add_argument(
+        "--no-wandb",
+        action = 'store_true',
+        help = "Disable WandB logging (no `wandb login` required).")
     ##################################################
     
     
