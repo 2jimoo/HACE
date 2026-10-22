@@ -33,8 +33,23 @@ def main(args):
     attackLM, targetLM = load_attack_and_target_models(args)
     judgeLM = load_judge(args)
     
+    # Load past successful strategies from external memory (if enabled)
+    memory_hint = ""
+    if getattr(args, "use_strategy_memory", False):
+        from strategy_memory import load_strategies, format_strategies_as_hint
+        strategies = load_strategies(
+            args.strategy_memory,
+            category=args.category,
+            goal=args.goal,
+            target_model=args.target_model,
+            top_k=args.top_k_strategies,
+        )
+        memory_hint = format_strategies_as_hint(strategies)
+        if strategies:
+            logger.info(f"[strategy-memory] Loaded {len(strategies)} past strategies as attacker seeds.")
+
     # Initialize conversations
-    convs_list, processed_response_list, system_prompts = initialize_conversations(args.n_streams, args.goal, args.target_str, attackLM.template)
+    convs_list, processed_response_list, system_prompts = initialize_conversations(args.n_streams, args.goal, args.target_str, attackLM.template, memory_hint)
     batchsize = args.n_streams
     
     wandb_logger = WandBLogger(args, system_prompts)
@@ -221,6 +236,22 @@ if __name__ == '__main__':
         "--no-wandb",
         action = 'store_true',
         help = "Disable WandB logging (no `wandb login` required).")
+
+    ########### Strategy memory parameters ##########
+    parser.add_argument(
+        "--strategy-memory",
+        type = str,
+        default = "strategy_memory.csv",
+        help = "CSV path where successful jailbreak strategies are backed up. Set to '' to disable recording.")
+    parser.add_argument(
+        "--use-strategy-memory",
+        action = 'store_true',
+        help = "Seed the attacker with top matching past successful strategies from the CSV.")
+    parser.add_argument(
+        "--top-k-strategies",
+        type = int,
+        default = 3,
+        help = "How many past strategies to load as attacker seeds when --use-strategy-memory is set.")
     ##################################################
     
     

@@ -65,9 +65,9 @@ def set_system_prompts(system_prompts, convs_list):
         conv.set_system_message(system_prompts[i%num_system_prompts])
         
 
-def initialize_conversations(n_streams: int, goal: str, target_str: str, attacker_template_name: str):
+def initialize_conversations(n_streams: int, goal: str, target_str: str, attacker_template_name: str, memory_hint: str = ""):
     batchsize = n_streams
-    init_msg = get_init_msg(goal, target_str)
+    init_msg = get_init_msg(goal, target_str) + (memory_hint or "")
     processed_response_list = [init_msg for _ in range(batchsize)]
     convs_list = [conv_template(attacker_template_name) for _ in range(batchsize)]
 
