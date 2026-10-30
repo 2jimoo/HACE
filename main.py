@@ -33,20 +33,14 @@ def main(args):
     attackLM, targetLM = load_attack_and_target_models(args)
     judgeLM = load_judge(args)
     
-    # Load past successful strategies from external memory (if enabled)
+    # Retrieve similar past experiences (successes and failures) from the ReasoningBank
     memory_hint = ""
-    if getattr(args, "use_strategy_memory", False):
-        from strategy_memory import load_strategies, format_strategies_as_hint
-        strategies = load_strategies(
-            args.strategy_memory,
-            category=args.category,
-            goal=args.goal,
-            target_model=args.target_model,
-            top_k=args.top_k_strategies,
-        )
-        memory_hint = format_strategies_as_hint(strategies)
-        if strategies:
-            logger.info(f"[strategy-memory] Loaded {len(strategies)} past strategies as attacker seeds.")
+    if args.use_memory:
+        from reasoning_bank import retrieve, format_memory_hint
+        experiences = retrieve(args.memory_path, args.goal, top_k=args.memory_top_k, embed_model=args.memory_embed_model)
+        memory_hint = format_memory_hint(experiences)
+        if experiences:
+            logger.info(f"[reasoning-bank] Retrieved {len(experiences)} past experiences for the attacker.")
 
     # Initialize conversations
     convs_list, processed_response_list, system_prompts = initialize_conversations(args.n_streams, args.goal, args.target_str, attackLM.template, memory_hint)
@@ -94,8 +88,36 @@ def main(args):
         if any([score == 10 for score in judge_scores]):
             logger.info("Found a jailbreak. Exiting.")
             break
-    
+
+    # Distill this run's best trajectory into strategy memory items and store them
+    if args.memory_path:
+        store_experience(args, attackLM, wandb_logger)
+
     wandb_logger.finish()
+
+
+def store_experience(args, attackLM, wandb_logger):
+    from reasoning_bank import add_experience
+    df = wandb_logger.table
+    # Best stream: the first one to reach the max score (the jailbreaking stream on success)
+    best = df.sort_values(["judge_scores", "iter"], ascending=[False, True]).iloc[0]
+    steps = df[df["conv_num"] == best["conv_num"]].sort_values("iter").to_dict("records")
+    if args.memory_model:
+        from conversers import load_indiv_model
+        memory_lm = load_indiv_model(args.memory_model, use_jailbreakbench=False)
+    else:
+        memory_lm = attackLM.model
+    add_experience(
+        args.memory_path, memory_lm, args.goal, steps,
+        success=wandb_logger.is_jailbroken,
+        best_score=int(best["judge_scores"]),
+        embed_model=args.memory_embed_model,
+        category=args.category,
+        attack_model=args.attack_model,
+        target_model=args.target_model,
+        judge_model=args.judge_model,
+        queries_to_jailbreak=wandb_logger.query_to_jailbreak,
+    )
 
 
 if __name__ == '__main__':
@@ -237,21 +259,31 @@ if __name__ == '__main__':
         action = 'store_true',
         help = "Disable WandB logging (no `wandb login` required).")
 
-    ########### Strategy memory parameters ##########
+    ########### ReasoningBank memory parameters ##########
     parser.add_argument(
-        "--strategy-memory",
+        "--memory-path",
         type = str,
-        default = "strategy_memory.csv",
-        help = "CSV path where successful jailbreak strategies are backed up. Set to '' to disable recording.")
+        default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory", "reasoning_bank.jsonl"),
+        help = "JSONL memory bank. After each run, success/failure strategy items are induced and appended here. Set to '' to disable recording.")
     parser.add_argument(
-        "--use-strategy-memory",
+        "--use-memory",
         action = 'store_true',
-        help = "Seed the attacker with top matching past successful strategies from the CSV.")
+        help = "Inject the most similar past experiences from the memory bank into the attacker's initial message.")
     parser.add_argument(
-        "--top-k-strategies",
+        "--memory-top-k",
         type = int,
         default = 3,
-        help = "How many past strategies to load as attacker seeds when --use-strategy-memory is set.")
+        help = "Number of similar past experiences to retrieve when --use-memory is set.")
+    parser.add_argument(
+        "--memory-model",
+        type = str,
+        default = "",
+        help = "Model that distills trajectories into memory items (e.g. ollama/<model>). Defaults to the attack model.")
+    parser.add_argument(
+        "--memory-embed-model",
+        type = str,
+        default = "",
+        help = "Embedding model for similarity retrieval, e.g. ollama/nomic-embed-text. Empty uses bag-of-words cosine.")
     ##################################################
     
     

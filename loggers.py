@@ -55,13 +55,6 @@ class WandBLogger:
         self.jailbreak_prompt = None
         self.jailbreak_response = None
 
-        # Strategy memory (external CSV backup of successful strategies)
-        self.strategy_memory_path = getattr(args, "strategy_memory", None)
-        self.category = args.category
-        self.attack_model = args.attack_model
-        self.target_model = args.target_model
-        self.judge_model = args.judge_model
-
     def log(self, iteration: int, attack_list: list, response_list: list, judge_scores: list):
         
         df = pd.DataFrame(attack_list)
@@ -78,10 +71,6 @@ class WandBLogger:
                 self.logger.log({"queries_to_jailbreak": self.query_to_jailbreak})
                 self.is_jailbroken = True
 
-                # Back up this winning strategy to the external CSV so future
-                # runs can reference it (only the first jailbreak per run).
-                self._record_strategy(attack_list[jailbreak_ind])
-
             self.jailbreak_prompt = attack_list[jailbreak_ind]["prompt"]
             self.jailbreak_response = response_list[jailbreak_ind]
 
@@ -96,23 +85,6 @@ class WandBLogger:
             "data": wandb.Table(data = self.table)})
 
         self.print_summary_stats(iteration)
-
-    def _record_strategy(self, attack):
-        if not self.strategy_memory_path:
-            return
-        from strategy_memory import record_success
-        record_success(self.strategy_memory_path, {
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "goal": self.goal,
-            "category": self.category,
-            "attack_model": self.attack_model,
-            "target_model": self.target_model,
-            "judge_model": self.judge_model,
-            "queries_to_jailbreak": self.query_to_jailbreak,
-            "judge_score": 10,
-            "improvement": attack.get("improvement", ""),
-            "adv_prompt": attack.get("prompt", ""),
-        })
 
     def finish(self):
         self.print_final_summary_stats()
