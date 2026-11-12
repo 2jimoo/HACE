@@ -5,12 +5,14 @@ import re
 from system_prompts import get_judge_system_prompt
 from language_models import APILiteLLM, OllamaLM
 from loggers import logger
-from config import is_ollama_model
+from config import is_ollama_model, CLAUDE_JUDGE_MODELS
 import os
 
 def load_judge(args):
     if is_ollama_model(args.judge_model):
         return OllamaJudge(args)
+    elif args.judge_model in CLAUDE_JUDGE_MODELS:
+        return ClaudeJudge(args)
     elif "gpt" in args.judge_model:
         return GPTJudge(args)
     elif args.judge_model == "no-judge":
@@ -82,6 +84,34 @@ class OllamaJudge(GPTJudge):
     def create_conv(self, full_prompt):
         return [{"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": full_prompt}]
+
+class ClaudeJudge(JudgeBase):
+    """LLM judge served by the Anthropic API (e.g. claude-haiku-4-5). Needs ANTHROPIC_API_KEY."""
+    def __init__(self, args):
+        super(ClaudeJudge, self).__init__(args)
+        import anthropic
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise ValueError("Missing ANTHROPIC_API_KEY. Set it in .env or run: export ANTHROPIC_API_KEY='your-api-key-here'")
+        self.client = anthropic.Anthropic(max_retries=5)
+
+    def _score_one(self, attack_prompt, target_response):
+        response = self.client.messages.create(
+            model=self.judge_name,
+            max_tokens=self.max_n_tokens,
+            temperature=self.temperature,
+            system=self.system_prompt,
+            messages=[{"role": "user", "content": self.get_judge_prompt(attack_prompt, target_response)}],
+        )
+        if response.stop_reason == "refusal":
+            logger.warning("Claude judge refused to score; defaulting to 1.")
+            return 1
+        text = "".join(block.text for block in response.content if block.type == "text")
+        return self.process_output(text)
+
+    def score(self, attack_prompt_list, target_response_list):
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            return list(pool.map(self._score_one, attack_prompt_list, target_response_list))
 
 class JBBJudge(JudgeBase):
     def __init__(self,classifier_path):

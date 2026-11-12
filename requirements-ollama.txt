@@ -3,3 +3,4 @@ requests
 pandas
 psutil
 wandb
+anthropic

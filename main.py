@@ -6,7 +6,7 @@ from common import process_target_response, initialize_conversations
 import psutil
 import os
 import time
-from config import is_ollama_model
+from config import is_ollama_model, CLAUDE_JUDGE_MODELS
 
 def model_choice(choices):
     """argparse type: accept one of the predefined models, or any Ollama model as "ollama/<model>"."""
@@ -41,6 +41,14 @@ def main(args):
         memory_hint = format_memory_hint(experiences)
         if experiences:
             logger.info(f"[reasoning-bank] Retrieved {len(experiences)} past experiences for the attacker.")
+
+    # Retrieve past attacks the target faced and turn them into a defense system prompt
+    if args.defense_memory == "on":
+        from reasoning_bank import retrieve, format_defense_hint
+        experiences = retrieve(args.defense_memory_path, args.goal, top_k=args.defense_memory_top_k, embed_model=args.memory_embed_model)
+        targetLM.defense_prompt = format_defense_hint(experiences)
+        if experiences:
+            logger.info(f"[reasoning-bank:defense] Retrieved {len(experiences)} past attacks for the target's system prompt.")
 
     # Initialize conversations
     convs_list, processed_response_list, system_prompts = initialize_conversations(args.n_streams, args.goal, args.target_str, attackLM.template, memory_hint)
@@ -90,7 +98,7 @@ def main(args):
             break
 
     # Distill this run's best trajectory into strategy memory items and store them
-    if args.memory_path:
+    if args.memory_path or args.defense_memory != "off":
         store_experience(args, attackLM, wandb_logger)
 
     wandb_logger.finish()
@@ -107,9 +115,7 @@ def store_experience(args, attackLM, wandb_logger):
         memory_lm = load_indiv_model(args.memory_model, use_jailbreakbench=False)
     else:
         memory_lm = attackLM.model
-    add_experience(
-        args.memory_path, memory_lm, args.goal, steps,
-        success=wandb_logger.is_jailbroken,
+    meta = dict(
         best_score=int(best["judge_scores"]),
         embed_model=args.memory_embed_model,
         category=args.category,
@@ -118,6 +124,13 @@ def store_experience(args, attackLM, wandb_logger):
         judge_model=args.judge_model,
         queries_to_jailbreak=wandb_logger.query_to_jailbreak,
     )
+    if args.memory_path:
+        add_experience(args.memory_path, memory_lm, args.goal, steps,
+                       success=wandb_logger.is_jailbroken, role="attack", **meta)
+    if args.defense_memory != "off":
+        add_experience(args.defense_memory_path, memory_lm, args.goal, steps,
+                       success=not wandb_logger.is_jailbroken, role="defense",
+                       defense_applied=args.defense_memory == "on", **meta)
 
 
 if __name__ == '__main__':
@@ -177,8 +190,8 @@ if __name__ == '__main__':
     parser.add_argument(
         "--judge-model",
         default="gcg", #TODO changed
-        help="Name of judge model. Defaults to the GCG keyword-matching judge. Use ollama/<model> (e.g. ollama/llama3.1:8b) to run a local Ollama model.",
-        type=model_choice(["gpt-3.5-turbo-1106", "gpt-4-0125-preview","no-judge","jailbreakbench","gcg"])
+        help="Name of judge model. Defaults to the GCG keyword-matching judge. Use ollama/<model> (e.g. ollama/llama3.1:8b) to run a local Ollama model, or claude-haiku-4-5 (needs ANTHROPIC_API_KEY, e.g. in .env).",
+        type=model_choice(["gpt-3.5-turbo-1106", "gpt-4-0125-preview","no-judge","jailbreakbench","gcg"] + CLAUDE_JUDGE_MODELS)
     )
     parser.add_argument(
         "--judge-max-n-tokens",
@@ -284,6 +297,24 @@ if __name__ == '__main__':
         type = str,
         default = "",
         help = "Embedding model for similarity retrieval, e.g. ollama/nomic-embed-text. Empty uses bag-of-words cosine.")
+
+    ########### ReasoningBank defense memory parameters ##########
+    parser.add_argument(
+        "--defense-memory",
+        default = "off",
+        choices = ["off", "record", "on"],
+        help = "Defense-side memory. 'record': after each run, distill defense strategy items (why the target held or was breached) into the defense bank. "
+               "'on': also inject the most similar past attacks' defense items into the target's system prompt. Not supported with JailbreakBench targets.")
+    parser.add_argument(
+        "--defense-memory-path",
+        type = str,
+        default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory", "defense_bank.jsonl"),
+        help = "JSONL defense memory bank (separate from the attacker's --memory-path).")
+    parser.add_argument(
+        "--defense-memory-top-k",
+        type = int,
+        default = 3,
+        help = "Number of similar past attacks to retrieve when --defense-memory on.")
     ##################################################
     
     
@@ -291,4 +322,6 @@ if __name__ == '__main__':
     logger.set_level(args.verbosity)
 
     args.use_jailbreakbench = not args.not_jailbreakbench
+    if args.defense_memory == "on" and args.use_jailbreakbench and not is_ollama_model(args.target_model):
+        parser.error("--defense-memory on needs control of the target's system prompt; use an ollama/<model> target or --not-jailbreakbench.")
     main(args)

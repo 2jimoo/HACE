@@ -1,5 +1,19 @@
 from enum import Enum
 import os
+
+def _load_dotenv(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+    """Load KEY=VALUE lines from .env into os.environ (already-set variables win)."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+_load_dotenv()
 VICUNA_PATH = "/home/pchao/vicuna-13b-v1.5"
 LLAMA_PATH = "/home/pchao/Llama-2-7b-chat-hf"
 
@@ -110,3 +124,7 @@ OLLAMA_BASE_URL = OLLAMA_BASE_URL.rstrip("/")
 
 def is_ollama_model(model_name: str) -> bool:
     return isinstance(model_name, str) and model_name.startswith(OLLAMA_PREFIX)
+
+## CLAUDE (Anthropic API) ##
+# Claude models usable as --judge-model via the Anthropic SDK. Reads ANTHROPIC_API_KEY (e.g. from .env).
+CLAUDE_JUDGE_MODELS = ["claude-haiku-4-5"]
