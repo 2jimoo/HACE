@@ -91,7 +91,8 @@ class ClaudeJudge(JudgeBase):
         super(ClaudeJudge, self).__init__(args)
         import anthropic
         if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise ValueError("Missing ANTHROPIC_API_KEY. Set it in .env or run: export ANTHROPIC_API_KEY='your-api-key-here'")
+            raise ValueError("Missing ANTHROPIC_API_KEY for the default claude-haiku-4-5 judge. Set it in .env, "
+                             "or pick another judge, e.g. --judge-model gcg.")
         self.client = anthropic.Anthropic(max_retries=5)
 
     # Prefill the rating format so the judge answers with the score instead of commentary

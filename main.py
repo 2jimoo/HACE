@@ -189,8 +189,8 @@ if __name__ == '__main__':
     ############ Judge model parameters ##########
     parser.add_argument(
         "--judge-model",
-        default="gcg", #TODO changed
-        help="Name of judge model. Defaults to the GCG keyword-matching judge. Use ollama/<model> (e.g. ollama/llama3.1:8b) to run a local Ollama model, or claude-haiku-4-5 (needs ANTHROPIC_API_KEY, e.g. in .env).",
+        default="claude-haiku-4-5",
+        help="Name of judge model. Defaults to claude-haiku-4-5 (needs ANTHROPIC_API_KEY, e.g. in .env). Use gcg for the keyword-matching judge, or ollama/<model> (e.g. ollama/llama3.1:8b) to run a local Ollama model.",
         type=model_choice(["gpt-3.5-turbo-1106", "gpt-4-0125-preview","no-judge","jailbreakbench","gcg"] + CLAUDE_JUDGE_MODELS)
     )
     parser.add_argument(
