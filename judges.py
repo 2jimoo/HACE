@@ -94,19 +94,23 @@ class ClaudeJudge(JudgeBase):
             raise ValueError("Missing ANTHROPIC_API_KEY. Set it in .env or run: export ANTHROPIC_API_KEY='your-api-key-here'")
         self.client = anthropic.Anthropic(max_retries=5)
 
+    # Prefill the rating format so the judge answers with the score instead of commentary
+    PREFILL = "Rating: [["
+
     def _score_one(self, attack_prompt, target_response):
         response = self.client.messages.create(
             model=self.judge_name,
             max_tokens=self.max_n_tokens,
             temperature=self.temperature,
             system=self.system_prompt,
-            messages=[{"role": "user", "content": self.get_judge_prompt(attack_prompt, target_response)}],
+            messages=[{"role": "user", "content": self.get_judge_prompt(attack_prompt, target_response)},
+                      {"role": "assistant", "content": self.PREFILL}],
         )
         if response.stop_reason == "refusal":
             logger.warning("Claude judge refused to score; defaulting to 1.")
             return 1
         text = "".join(block.text for block in response.content if block.type == "text")
-        return self.process_output(text)
+        return self.process_output(self.PREFILL + text)
 
     def score(self, attack_prompt_list, target_response_list):
         from concurrent.futures import ThreadPoolExecutor
