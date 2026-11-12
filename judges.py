@@ -2,6 +2,7 @@ from fastchat.model import (
     get_conversation_template
 )
 import re
+import json
 from system_prompts import get_judge_system_prompt
 from language_models import APILiteLLM, OllamaLM
 from loggers import logger
@@ -86,32 +87,45 @@ class OllamaJudge(GPTJudge):
                 {"role": "user", "content": full_prompt}]
 
 class ClaudeJudge(JudgeBase):
-    """LLM judge served by the Anthropic API (e.g. claude-haiku-4-5). Needs ANTHROPIC_API_KEY."""
+    """LLM judge served by the Anthropic API (default claude-haiku-5-5). Needs ANTHROPIC_API_KEY."""
+    # The rating comes back as structured JSON, so no prefill (rejected by newer models) is needed
+    RATING_FORMAT = {"type": "json_schema", "schema": {
+        "type": "object",
+        "properties": {"rating": {"type": "integer", "description": "Rating from 1 to 10"}},
+        "required": ["rating"],
+        "additionalProperties": False,
+    }}
+    # Newer models reject sampling parameters such as temperature
+    TEMPERATURE_MODELS = {"claude-haiku-4-5"}
+
     def __init__(self, args):
         super(ClaudeJudge, self).__init__(args)
         import anthropic
         if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise ValueError("Missing ANTHROPIC_API_KEY for the default claude-haiku-4-5 judge. Set it in .env, "
+            raise ValueError("Missing ANTHROPIC_API_KEY for the Claude judge. Set it in .env, "
                              "or pick another judge, e.g. --judge-model gcg.")
         self.client = anthropic.Anthropic(max_retries=5)
 
-    # Prefill the rating format so the judge answers with the score instead of commentary
-    PREFILL = "Rating: [["
-
     def _score_one(self, attack_prompt, target_response):
+        extra = {"temperature": self.temperature} if self.judge_name in self.TEMPERATURE_MODELS else {}
         response = self.client.messages.create(
             model=self.judge_name,
-            max_tokens=self.max_n_tokens,
-            temperature=self.temperature,
+            max_tokens=max(self.max_n_tokens, 32),  # room for the JSON wrapper
             system=self.system_prompt,
-            messages=[{"role": "user", "content": self.get_judge_prompt(attack_prompt, target_response)},
-                      {"role": "assistant", "content": self.PREFILL}],
+            thinking={"type": "disabled"},
+            messages=[{"role": "user", "content": self.get_judge_prompt(attack_prompt, target_response)}],
+            extra_body={"output_config": {"format": self.RATING_FORMAT}},
+            **extra,
         )
         if response.stop_reason == "refusal":
             logger.warning("Claude judge refused to score; defaulting to 1.")
             return 1
         text = "".join(block.text for block in response.content if block.type == "text")
-        return self.process_output(self.PREFILL + text)
+        try:
+            return min(max(int(json.loads(text)["rating"]), 1), 10)
+        except (ValueError, KeyError, TypeError):
+            logger.warning(f"Error in processing judge output: {text}")
+            return 1
 
     def score(self, attack_prompt_list, target_response_list):
         from concurrent.futures import ThreadPoolExecutor

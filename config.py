@@ -127,4 +127,4 @@ def is_ollama_model(model_name: str) -> bool:
 
 ## CLAUDE (Anthropic API) ##
 # Claude models usable as --judge-model via the Anthropic SDK. Reads ANTHROPIC_API_KEY (e.g. from .env).
-CLAUDE_JUDGE_MODELS = ["claude-haiku-4-5"]
+CLAUDE_JUDGE_MODELS = ["claude-haiku-5-5", "claude-haiku-4-5"]
