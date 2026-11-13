@@ -191,8 +191,9 @@ class TargetLM():
 
         self.model = load_indiv_model(model_name, evaluate_locally, use_jailbreakbench)            
         self.category = category
-        # Extra system prompt for the target (e.g. ReasoningBank defense memory). Not supported with JailbreakBench.
-        self.defense_prompt = ""
+        # Maps each incoming prompt to an extra system prompt for the target (e.g. ReasoningBank
+        # defense memory retrieved by attack similarity). Not supported with JailbreakBench.
+        self.defense_retriever = None
 
     def get_response(self, prompts_list):
         if self.use_jailbreakbench:
@@ -206,15 +207,16 @@ class TargetLM():
             convs_list = [conv_template(self.template) for _ in range(batchsize)]
             full_prompts = []
             for conv, prompt in zip(convs_list, prompts_list):
-                if self.defense_prompt and not is_ollama_model(self.model_name):
-                    conv.set_system_message((conv.system_message + "\n\n" + self.defense_prompt).strip())
+                defense_prompt = self.defense_retriever(prompt) if self.defense_retriever else ""
+                if defense_prompt and not is_ollama_model(self.model_name):
+                    conv.set_system_message((conv.system_message + "\n\n" + defense_prompt).strip())
                 conv.append_message(conv.roles[0], prompt)
                 messages = conv.to_openai_api_messages()
                 # Let Ollama use the model's own default system prompt instead of FastChat's
                 if is_ollama_model(self.model_name):
                     messages = messages[1:]
-                    if self.defense_prompt:
-                        messages = [{"role": "system", "content": self.defense_prompt}] + messages
+                    if defense_prompt:
+                        messages = [{"role": "system", "content": defense_prompt}] + messages
                 full_prompts.append(messages)
 
             responses = self.model.batched_generate(full_prompts, 

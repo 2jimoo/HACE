@@ -32,6 +32,10 @@ def main(args):
     # Initialize models and judge
     attackLM, targetLM = load_attack_and_target_models(args)
     judgeLM = load_judge(args)
+    feedbackLM = None
+    if args.feedback_model:
+        from judges import JudgeFeedback
+        feedbackLM = JudgeFeedback(args.feedback_model)
     
     # Retrieve similar past experiences (successes and failures) from the ReasoningBank
     memory_hint = ""
@@ -42,25 +46,24 @@ def main(args):
         if experiences:
             logger.info(f"[reasoning-bank] Retrieved {len(experiences)} past experiences for the attacker.")
 
-    # Retrieve past attacks the target faced and turn them into a defense system prompt
+    # For each incoming attack prompt, the target retrieves the most similar past attacks and
+    # gets their defense items as its system prompt (the defender never sees the goal)
     if args.defense_memory == "on":
-        from reasoning_bank import retrieve, format_defense_hint
-        experiences = retrieve(args.defense_memory_path, args.goal, top_k=args.defense_memory_top_k, embed_model=args.memory_embed_model)
-        targetLM.defense_prompt = format_defense_hint(experiences)
-        if experiences:
-            logger.info(f"[reasoning-bank:defense] Retrieved {len(experiences)} past attacks for the target's system prompt.")
+        from reasoning_bank import DefenseRetriever
+        targetLM.defense_retriever = DefenseRetriever(args.defense_memory_path, top_k=args.defense_memory_top_k, embed_model=args.memory_embed_model)
+        logger.info(f"[reasoning-bank:defense] Loaded {len(targetLM.defense_retriever)} past attacks for per-prompt retrieval.")
 
     # Initialize conversations
     convs_list, processed_response_list, system_prompts = initialize_conversations(args.n_streams, args.goal, args.target_str, attackLM.template, memory_hint)
     batchsize = args.n_streams
     
     wandb_logger = WandBLogger(args, system_prompts)
-    target_response_list, judge_scores = None, None
+    target_response_list, judge_scores, judge_feedbacks = None, None, None
     # Begin PAIR
     for iteration in range(1, args.n_iterations + 1):
         logger.debug(f"""\n{'='*36}\nIteration: {iteration}\n{'='*36}\n""")
         if iteration > 1:
-            processed_response_list = [process_target_response(target_response, score, args.goal, args.target_str) for target_response, score in zip(target_response_list,judge_scores)]
+            processed_response_list = [process_target_response(target_response, score, args.goal, args.target_str, feedback) for target_response, score, feedback in zip(target_response_list, judge_scores, judge_feedbacks)]
         
 
         # Get adversarial prompts and improvement
@@ -80,13 +83,16 @@ def main(args):
         # Get judge scores
         judge_scores = judgeLM.score(adv_prompt_list, target_response_list)
         logger.debug("Finished getting judge scores.")
+
+        # Explain the scores (why the target refused / complied) for the attacker and for memory induction
+        judge_feedbacks = feedbackLM.explain(args.goal, adv_prompt_list, target_response_list, judge_scores) if feedbackLM else ["" for _ in judge_scores]
         
         # Print prompts, responses, and scores
-        for i,(prompt,improv,response, score) in enumerate(zip(adv_prompt_list,improv_list,target_response_list, judge_scores)):
-            logger.debug(f"{i+1}/{batchsize}\n\n[IMPROVEMENT]:\n{improv} \n\n[PROMPT]:\n{prompt} \n\n[RESPONSE]:\n{response}\n\n[SCORE]:\n{score}\n\n")
+        for i,(prompt,improv,response, score, feedback) in enumerate(zip(adv_prompt_list,improv_list,target_response_list, judge_scores, judge_feedbacks)):
+            logger.debug(f"{i+1}/{batchsize}\n\n[IMPROVEMENT]:\n{improv} \n\n[PROMPT]:\n{prompt} \n\n[RESPONSE]:\n{response}\n\n[SCORE]:\n{score}\n\n[FEEDBACK]:\n{feedback}\n\n")
 
         # WandB log values
-        wandb_logger.log(iteration, extracted_attack_list, target_response_list, judge_scores)
+        wandb_logger.log(iteration, extracted_attack_list, target_response_list, judge_scores, judge_feedbacks)
 
         # Truncate conversation to avoid context length issues
         for i, conv in enumerate(convs_list):
@@ -98,10 +104,17 @@ def main(args):
             break
 
     # Distill this run's best trajectory into strategy memory items and store them
-    if args.memory_path or args.defense_memory != "off":
+    if not args.freeze_memory and (args.memory_path or args.defense_memory != "off"):
         store_experience(args, attackLM, wandb_logger)
 
     wandb_logger.finish()
+    return dict(
+        goal=args.goal,
+        category=args.category,
+        jailbroken=wandb_logger.is_jailbroken,
+        best_score=int(wandb_logger.table["judge_scores"].max()),
+        queries_to_jailbreak=wandb_logger.query_to_jailbreak,
+    )
 
 
 def store_experience(args, attackLM, wandb_logger):
@@ -133,8 +146,7 @@ def store_experience(args, attackLM, wandb_logger):
                        defense_applied=args.defense_memory == "on", **meta)
 
 
-if __name__ == '__main__':
-
+def parse_args(argv=None):
     parser = argparse.ArgumentParser()
 
     ########### Attack model parameters ##########
@@ -205,6 +217,13 @@ if __name__ == '__main__':
         type=float,
         default=0,
         help="Temperature to use for judge."
+    )
+    parser.add_argument(
+        "--feedback-model",
+        default="ollama/qwen2.5:7b",
+        help="LLM that explains each judge score in 1-2 sentences (why the target refused or complied). "
+             "The explanation is shown to the attacker as JUDGE FEEDBACK and stored in the memory trajectory. "
+             "Any ollama/<model> or API model; '' disables it."
     )
     ##################################################
 
@@ -315,14 +334,22 @@ if __name__ == '__main__':
         "--defense-memory-top-k",
         type = int,
         default = 3,
-        help = "Number of similar past attacks to retrieve when --defense-memory on.")
+        help = "Number of similar past attacks to retrieve per incoming attack prompt when --defense-memory on.")
+    parser.add_argument(
+        "--freeze-memory",
+        action = 'store_true',
+        help = "Only read the memory banks; do not store this run's experience (e.g. Phase 2 evaluation).")
     ##################################################
     
     
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     logger.set_level(args.verbosity)
 
     args.use_jailbreakbench = not args.not_jailbreakbench
     if args.defense_memory == "on" and args.use_jailbreakbench and not is_ollama_model(args.target_model):
         parser.error("--defense-memory on needs control of the target's system prompt; use an ollama/<model> target or --not-jailbreakbench.")
-    main(args)
+    return args
+
+
+if __name__ == '__main__':
+    main(parse_args())

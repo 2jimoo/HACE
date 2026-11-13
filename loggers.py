@@ -55,11 +55,12 @@ class WandBLogger:
         self.jailbreak_prompt = None
         self.jailbreak_response = None
 
-    def log(self, iteration: int, attack_list: list, response_list: list, judge_scores: list):
+    def log(self, iteration: int, attack_list: list, response_list: list, judge_scores: list, judge_feedbacks: list = None):
         
         df = pd.DataFrame(attack_list)
         df["target_response"] = response_list
         df["judge_scores"] = judge_scores
+        df["judge_feedback"] = judge_feedbacks or ["" for _ in response_list]
         df["iter"] = iteration
         df["conv_num"] = [i+1 for i in range(len(response_list))]
         self.table = pd.concat([self.table, df])
